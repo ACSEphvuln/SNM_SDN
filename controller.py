@@ -2,7 +2,7 @@ from pox.core import core
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
 import pox.lib.addresses as adr
-from	pox.lib.addresses import IPAddr, EthAddr
+from pox.lib.addresses import IPAddr, EthAddr
 from pox.lib.util import dpid_to_str
 log = core.getLogger()
 
@@ -171,7 +171,7 @@ class Controller(object):
 		arp_packet = packet.payload
 		if arp_packet.opcode == pkt.arp.REQUEST:
 			# For each subnet in the router 'r'
-			for k in range(0,len(routingPorts[r][subnets]))
+			for k in range(0,len(routingPorts[r][subnets])):
 				subIP = self.routingPorts[r][subnets][k]['ip']
 				# Directed to router for the specific subnet
 				if str(arp_packet.protodst) == subIP:
@@ -273,8 +273,8 @@ class Controller(object):
 						if ipDst.inNetwork(subnet):
 							# Source and destination are not in the same subnet
 							if not ipSrc.inNetwork(self.routingPorts[r]['subnets'][i]):
-								log.debug("Forwarding packet from %r to subnetwork %r directly."%(str(ipSrc,subnetDest))
-								msg = of.ofp_flow_mod()       
+								log.debug("Forwarding packet from %r to subnetwork %r directly."%(str(ipSrc,subnetDest)))
+								msg = of.ofp_flow_mod()
 								msg.match.dl_type = pkt.ethernet.IP_TYPE
 								msg.match.dl_src = packet.src
 								msg.match.dl_dst = packet.dst
@@ -316,8 +316,8 @@ class Controller(object):
 										if routingPorts[j]["subnets"][k]["ip"] ==  routerDst:
 											dstMac = routingPorts[j]["mac"]
 
-							msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(dstMac))
-							msg.actions.append(of.ofp_action_dl_addr.set_src(routingPorts[r]["mac"])))
+							msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(dstMac)))
+							msg.actions.append(of.ofp_action_dl_addr.set_src(routingPorts[r]["mac"]))
 							msg.actions.append(of.ofp_action_output(port = routingPorts[r]["subnets"][i]["port"]))
 							self.connection.send(msg)
 
