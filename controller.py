@@ -170,16 +170,17 @@ class Controller(object):
 
 		# Assign DPID to each router
 		self.switchDPID={
-		"00-00-00-00-00-01":0,
-		"00-00-00-00-00-02":1,
-		"00-00-00-00-00-03":2,
-		"00-00-00-00-00-04":3,
-		"00-00-00-00-00-05":4,
-		"00-00-00-00-00-06":5
+		"00-00-00-00-01-00":0,
+		"00-00-00-00-02-00":1,
+		"00-00-00-00-03-00":2,
+		"00-00-00-00-04-00":3,
+		"00-00-00-00-f1-00":4,
+		"00-00-00-00-f2-00":5
 		}
 
 	# ref: https://openflow.stanford.edu/display/ONL/POX+Wiki.html#POXWiki-Example%3AARPmessages
 	def arp(self, packet, data, r):
+		log.debug("Arp message detected from %r"%packet.payload.protodst)
 		arp_packet = packet.payload
 		if arp_packet.opcode == pkt.arp.REQUEST:
 			# For each subnet in the router 'r'
@@ -209,7 +210,7 @@ class Controller(object):
 					msg.actions.append(action)
 					self.connection.send(msg)
 
-					self.LAN_mac_port[r][packet.src] = data.in_port
+					self.arpTable[r][arp_packet.protodst] = [data.in_port, packet.src]
 
 				else:
 					# Ignore. In our topology each port coresponds to a subnet
@@ -217,14 +218,14 @@ class Controller(object):
 
 		elif arp_packet.opcode == pkt.arp.REPLY:
 			log.debug("Received ARP REPLY. Adding to ARP table")
-			self.LAN_mac_port[r][packet.src] = data.in_port
+			self.arpTable[r][packet.src] = [data.in_port, packet.src]
 			# ! Can pe poisoned if handeled this way
 
 
 	def forwardIPPacket(self, packet, data, r):
 		ipDst = packet.payload.dstip
 		ipSrc = packet.payload.srcip
-		log.debug("Forwarding packet src:%s dst:%s"%(ipSrc,ipDst))
+		log.debug("Got packet srcIP:%s with macSrc:%s TO dstIP:%s macDst:%s"%(ipSrc,packet.src,ipDst,packet.dst))
 
 		# Packet is reffered to router
 		if packet.type == pkt.ethernet.ARP_TYPE:
@@ -277,65 +278,71 @@ class Controller(object):
 			else:
 				# Packet is reffered to a subnetwork from the router
 				thisHop = False
-				for i in range(0,len(self.routingPorts[r]['subnets'])):
-					if ipDst in self.arpTable[r]:
-						thisHop = True
-						subnetDest = self.routingPorts[r]['subnets'][i]
-						if ipDst.inNetwork(subnet):
-							# Source and destination are not in the same subnet
-							if not ipSrc.inNetwork(self.routingPorts[r]['subnets'][i]):
-								log.debug("Forwarding packet from %r to subnetwork %r directly."%(str(ipSrc,subnetDest)))
-								msg = of.ofp_flow_mod()
-								msg.match.dl_type = pkt.ethernet.IP_TYPE
-								msg.match.dl_src = packet.src
-								msg.match.dl_dst = packet.dst
-								msg.match.nw_src = packet.payload.srcip
-								msg.match.nw_dst = packet.payload.dstip # change with subnetDest
-								msg.match.in_port = data.in_port
-								msg.data = data
-								msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(self.arpTable[r][str(ipDst)][1])))
-								msg.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
-								msg.actions.append(of.ofp_action_output(port = self.arpTable[r][str(ipDst)][0]))
-								self.connection.send(msg)
-							else:
-								# Ignore. Hosts connected directly in the same port
-								pass
-					else:
-						log.debug("Unknown host")
+				if str(ipDst) in self.arpTable[r]:
+					thisHop = True
+					for subnet in self.routingPorts[r]['subnets']:
+						# Source and destination are not in the same subnet
+						if ipDst.inNetwork(subnet) and not ipSrc.inNetwork(subnet):
+							log.debug("Forwarding packet from %r to subnetwork %r directly."%(str(ipSrc),subnet))
+							msg = of.ofp_flow_mod()
+							msg.match.dl_type = pkt.ethernet.IP_TYPE
+							msg.match.dl_src = packet.src
+							msg.match.dl_dst = packet.dst
+							msg.match.nw_src = packet.payload.srcip
+							msg.match.nw_dst = packet.payload.dstip # change with subnetDest
+							msg.match.in_port = data.in_port
+							msg.data = data
+							msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(self.arpTable[r][str(ipDst)][1])))
+							msg.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
+							msg.actions.append(of.ofp_action_output(port = self.arpTable[r][str(ipDst)][0]))
+							self.connection.send(msg)
+						else:
+							log.debug("Packet came from the same subnet. Ignoring.")
+				else:
+					log.debug("Host is not in router %d subnets."%r)
 
 				# Packed should be forwarded
+				existsInNetwork = False
 				if not thisHop:
 					for i in self.externalRouteTable[r]:
-						if ipDst.inNetwork(self.externalRouteTable[r][i]):
+						if ipDst.inNetwork(i):
+							existsInNetwork = True
 							routerDst = self.externalRouteTable[r][i]
 
-							log.debug("Forwarding from %r to router %r"%(packet.src, routerDst))
+							log.debug("Forwarding to router with the ip %r"%(routerDst))
 							msg = of.ofp_flow_mod()
 							msg.match.dl_type = pkt.ethernet.IP_TYPE
 							msg.match.dl_src = packet.src
 							msg.match.dl_dst = packet.dst    
 							msg.match.nw_src = packet.payload.srcip
 							msg.match.nw_dst = packet.payload.dstip
-							msg.match.in_port = packet_in.in_port
-							msg.data = packet_in
+							msg.match.in_port = data.in_port
+							msg.data = data
 
 							# Find the mac to the next-hop router
 							dstMac = ""
+							dstSub = ""
 							for j in range(0,Controller.NUMBER_OF_ROUTERS):
 								if j != r:
 									for k in self.routingPorts[j]["subnets"]:
 										if self.routingPorts[j]["subnets"][k]["ip"] ==  routerDst:
 											dstMac = self.routingPorts[j]["mac"]
+											dstSub = k
+
+							log.debug("Sending trough %r"%dstMac)
 
 							msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(dstMac)))
-							msg.actions.append(of.ofp_action_dl_addr.set_src(routingPorts[r]["mac"]))
-							msg.actions.append(of.ofp_action_output(port = routingPorts[r]["subnets"][i]["port"]))
+							msg.actions.append(of.ofp_action_dl_addr.set_src(self.routingPorts[r]["mac"]))
+							msg.actions.append(of.ofp_action_output(port = self.routingPorts[r]["subnets"][dstSub]["port"]))
 							self.connection.send(msg)
+
+				if not existsInNetwork:
+					log.debug("No where to fw packet")
 
 
 
 	def route(self, packet, data, r):
-		log.debug("Event from: %d"%r)
+
 		# ARP packet
 		if packet.type == pkt.ethernet.ARP_TYPE:
 			self.arp(packet, data, r)
@@ -346,6 +353,7 @@ class Controller(object):
 
 
 	def _handle_PacketIn(self,event):
+		log.debug("\nEvent from: %r"%dpid_to_str(event.dpid))
 		packet = event.parsed
 		if not packet.parsed:
 			log.warning("Incomplete packet. Ignored.")

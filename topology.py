@@ -13,12 +13,12 @@ class MyTopo( Topo ):
         Topo.__init__( self )
 
         # Add routers and firewalls
-        r1 = self.addSwitch('r1')
-        r2 = self.addSwitch('r2')
-        r3 = self.addSwitch('r3')
-        r4 = self.addSwitch('r4')
-        f1 = self.addSwitch('f1')
-        f2 = self.addSwitch('f2')
+        r1 = self.addSwitch('r1',dpid='000000000100')
+        r2 = self.addSwitch('r2',dpid='000000000200')
+        r3 = self.addSwitch('r3',dpid='000000000300')
+        r4 = self.addSwitch('r4',dpid='000000000400')
+        f1 = self.addSwitch('f1',dpid='00000000f100')
+        f2 = self.addSwitch('f2',dpid='00000000f200')
 
         # Add links between routers & firewalls
         self.addLink(r1, r2, port1=1, port2=1, intfName1='r1-eth1', intfName2='r2-eth1')
