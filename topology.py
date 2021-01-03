@@ -37,8 +37,8 @@ class MyTopo( Topo ):
         #	params1={'ip': '192.168.210.129/27'}, params2={'ip': '192.168.210.130/27'})
 
         # Add hosts
-        attacker = self.addHost('attacker', ip='192.168.210.42/26', defaultRoute = "via 192.168.210.1")
-        httpServer = self.addHost('httpServer', ip='192.168.210.162/27', defaultRoute = "via 192.168.210.161")
+        attacker = self.addHost('attacker', ip='192.168.210.42/26', defaultRoute = "via 192.168.210.1",mac='aa:aa:aa:aa:aa:aa')
+        httpServer = self.addHost('httpServer', ip='192.168.210.162/27', defaultRoute = "via 192.168.210.161", mac='fa:fa:fa:fa:fa:fa')
 
         # Add links between hosts
         self.addLink(attacker, r1, port1=0, port2=3, intfName1='attacker-eth0', intfName2='r1-eth3')
