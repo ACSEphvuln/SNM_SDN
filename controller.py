@@ -8,14 +8,26 @@ log = core.getLogger()
 
 
 class Controller(object):
-	NUMBER_OF_ROUTERS = 3
+	NUMBER_OF_ROUTERS = 6
 
 	def __init__(self,connection):
 		self.connection = connection
 		connection.addListeners(self)
 
-		# {ip:port}
-		self.arpTable=[{},{},{},{},{},{}]
+		# {ip:[port:mac]}
+		self.arpTable=[{
+		"192.168.210.42":[3,"aa:aa:aa:aa:aa:aa"], #attacker
+		},{
+
+		},{
+
+		},{
+
+		},{
+		"192.168.210.162":[2,"fa:fa:fa:fa:fa:fa"], #httpServer
+		},{
+
+		}]
 
 		self.externalRouteTable=[
 		{	# Router 1 
@@ -171,8 +183,8 @@ class Controller(object):
 		arp_packet = packet.payload
 		if arp_packet.opcode == pkt.arp.REQUEST:
 			# For each subnet in the router 'r'
-			for k in range(0,len(routingPorts[r][subnets])):
-				subIP = self.routingPorts[r][subnets][k]['ip']
+			for k in range(0,len(self.routingPorts[r]["subnets"])):
+				subIP = self.routingPorts[r]["subnets"][k]['ip']
 				# Directed to router for the specific subnet
 				if str(arp_packet.protodst) == subIP:
 					# Forge ARP Reply
@@ -198,7 +210,6 @@ class Controller(object):
 					self.connection.send(msg)
 
 					self.LAN_mac_port[r][packet.src] = data.in_port
-					log.debug(self.arpTable[r])
 
 				else:
 					# Ignore. In our topology each port coresponds to a subnet
@@ -267,7 +278,7 @@ class Controller(object):
 				# Packet is reffered to a subnetwork from the router
 				thisHop = False
 				for i in range(0,len(self.routingPorts[r]['subnets'])):
-					if ipDst in arpTable[r][ipDst]:
+					if ipDst in arpTable[r]:
 						thisHop = True
 						subnetDest = self.routingPorts[r]['subnets'][i]
 						if ipDst.inNetwork(subnet):
@@ -312,9 +323,9 @@ class Controller(object):
 							dstMac = ""
 							for j in range(0,Controller.NUMBER_OF_ROUTERS):
 								if j != r:
-									for k in routingPorts[j]["subnets"]:
-										if routingPorts[j]["subnets"][k]["ip"] ==  routerDst:
-											dstMac = routingPorts[j]["mac"]
+									for k in self.routingPorts[j]["subnets"]:
+										if self.routingPorts[j]["subnets"][k]["ip"] ==  routerDst:
+											dstMac = self.routingPorts[j]["mac"]
 
 							msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(dstMac)))
 							msg.actions.append(of.ofp_action_dl_addr.set_src(routingPorts[r]["mac"]))
@@ -330,17 +341,12 @@ class Controller(object):
 			self.arp(packet, data, r)
 		# IPv4 Packet
 		elif packet.type == pkt.ethernet.IP_TYPE:
-			# IP - Icmp Packet
-			if packet.payload.protocol == pkt.ipv4.ICMP_PROTOCOL:
-				ipDst = packet.payload.dstrip
-				pass
-			# TCP or UDP:
-			else:
-				self.forwardIPPacket(packet, data, r)	
+			self.forwardIPPacket(packet, data, r)	
 
 
 
-	def _handle_PacketIn(self, event):
+	def _handle_PacketIn(self,event):
+		log.debug("Event captured\n")
 		packet = event.parsed
 		if not packet.parsed:
 			log.warning("Incomplete packet. Ignored.")
