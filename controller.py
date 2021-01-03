@@ -183,7 +183,7 @@ class Controller(object):
 		arp_packet = packet.payload
 		if arp_packet.opcode == pkt.arp.REQUEST:
 			# For each subnet in the router 'r'
-			for k in range(0,len(self.routingPorts[r]["subnets"])):
+			for k in self.routingPorts[r]["subnets"]:
 				subIP = self.routingPorts[r]["subnets"][k]['ip']
 				# Directed to router for the specific subnet
 				if str(arp_packet.protodst) == subIP:
@@ -278,7 +278,7 @@ class Controller(object):
 				# Packet is reffered to a subnetwork from the router
 				thisHop = False
 				for i in range(0,len(self.routingPorts[r]['subnets'])):
-					if ipDst in arpTable[r]:
+					if ipDst in self.arpTable[r]:
 						thisHop = True
 						subnetDest = self.routingPorts[r]['subnets'][i]
 						if ipDst.inNetwork(subnet):
@@ -305,9 +305,9 @@ class Controller(object):
 
 				# Packed should be forwarded
 				if not thisHop:
-					for i in externalRouteTable[r]:
-						if ipDst.inNetwork(externalRouteTable[r][i]):
-							routerDst = externalRouteTable[r][i]
+					for i in self.externalRouteTable[r]:
+						if ipDst.inNetwork(self.externalRouteTable[r][i]):
+							routerDst = self.externalRouteTable[r][i]
 
 							log.debug("Forwarding from %r to router %r"%(packet.src, routerDst))
 							msg = of.ofp_flow_mod()
@@ -346,7 +346,6 @@ class Controller(object):
 
 
 	def _handle_PacketIn(self,event):
-		log.debug("Event captured\n")
 		packet = event.parsed
 		if not packet.parsed:
 			log.warning("Incomplete packet. Ignored.")
