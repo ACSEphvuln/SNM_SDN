@@ -1,4 +1,5 @@
 from pox.core import core
+import time
 import pox.openflow.libopenflow_01 as of
 import pox.lib.packet as pkt
 import pox.lib.addresses as adr
@@ -28,6 +29,12 @@ class Controller(object):
 		},{
 
 		}]
+
+		# For firewall only
+		# ip:[last_seen,packet_count]
+		self.icmpFlood={}
+		self.updFlood={}
+		self.synFlood={}
 
 		self.externalRouteTable=[
 		{	# Router 1 
@@ -305,7 +312,7 @@ class Controller(object):
 		self.routeMsgFlow(packet, data, macNext, portNext)
 
 
-	def checkFlags(self, packet):
+	def badFlags(self, packet):
 		tcp = packet.find('tcp')
 		if tcp:
 			# Could be optimised. Used this way for logging purpuses
@@ -318,20 +325,38 @@ class Controller(object):
 			# tcp.SYN and tcp.FIN
 			if tcp.flags == 0x3:
 				log.debug("Detected SYN-FIN recon attack. Packet dropped.")
-				detect = True
 				return True
 
 			# no flag
 			if tcp.flags == 0x0:
 				log.debug("Detected no-flag recon attack. Packet dropped.")
-				detect = True
 				return True
 
 			# Any with urg
 			if tcp.URG:
 				log.debug("Detected URG. Not used in this network. Possible recon. Packet dropped.")
-				detect = True
 				return True
+
+		return False
+
+	# Stateful
+	def checkFlood(self, floodTable, ipSrc, maxPakets, interval):
+		if ipSrc not in self.floodTable.keys():
+			# Add host to watcher
+			floodTable[ipSrc] = [time.time()*1000,1]
+		else:
+			if time.time()*1000 - floodTable[ipSrc][0] > interval:
+				# Reset counted packets
+				floodTable[ipSrc][1] = 0;
+
+			# Increment observed packets
+			floodTable[ipSrc][1] = self.floodTable[ipSrc][1] + 1
+			floodTable[ipSrc][0] =  time.time()*1000
+
+			if floodTable[ipSrc][1] > maxPakets:
+				# Attack
+				return True
+
 
 		return False
 
@@ -347,17 +372,25 @@ class Controller(object):
 			# Normal routing
 			self.routeMsgFlow(packet, data, macNext, portNext)
 		else:
-			# Logic accept/reject:
-			allow = True
-			attacks=[self.checkFlags]
+			# If flags are valid and not in the list of attacks:
+			if not self.badFlags(packet):
+				flood = False
 
-			for detectAttack in attacks:
-				if detectAttack(packet):
-					allow = False
-					break; 
+				if packet.type == pkt.ipv4.ICMP_PROTOCOL:
+					flood = self.checkFlood(self.icmpFlood, ipSrc, 1000, 50)
+				elif packet.type == pkt.ipv4.UDP_PROTOCOL:
+					flood = self.checkFlood(self.updFlood, ipSrc, 1000, 100)
+				elif packet.type == pkt.ipv4.TCP_PROTOCOL:
+					# SYN
+					if packet.payload.flags == 0x2:
+						flood = self.checkFlood(self.synFlood, ipSrc, 100, 100)
 
-			if allow:
-				self.routeMsg(packet, data, macNext, portNext)
+				if flood:
+					# Block ip
+					log.debug("Flood attack detected. Blocking %r."%ipSrc)
+					log.debug("----------------------FLOOD_DETECTED.REMOVE_DEBUG_LINE_AFTER_TESTING---------------------------")
+				else:
+					self.routeMsg(packet, data, macNext, portNext)
 
 
 	def forwardIPPacket(self, packet, data, r):
@@ -407,13 +440,13 @@ class Controller(object):
 				msg.actions.append(action)
 
 				self.connection.send(msg)
-
 		# Any other packet
 		else:
 			if(r == 4):  # Firewall 1
 				self.firewall(packet, data, r)
 			else:		# Any router
 				self.router(packet, data, r)
+
 
 	def _handle_PacketIn(self,event):
 		log.debug("\nEvent from: %r"%dpid_to_str(event.dpid))
