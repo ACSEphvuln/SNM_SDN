@@ -188,6 +188,7 @@ class Controller(object):
 				subIP = self.routingPorts[r]["subnets"][k]['ip']
 				# Directed to router for the specific subnet
 				if str(arp_packet.protodst) == subIP:
+					log.debug("Sending ARP reply")
 					# Forge ARP Reply
 					# ARP
 					arp_reply = pkt.arp()
@@ -222,135 +223,133 @@ class Controller(object):
 			# ! Can pe poisoned if handeled this way
 
 
+	def findRoute(self, ipSrc, ipDst, r):
+		macNext = None
+		portNext = None
+
+		# Packet is reffered to a subnetwork from the router
+		if str(ipDst) in self.arpTable[r]:
+			for subnet in self.routingPorts[r]['subnets']:
+				# Source and destination are not in the same subnet
+				if ipDst.inNetwork(subnet):
+					if not ipSrc.inNetwork(subnet):
+						log.debug("Found direct route for packet from %r to subnetwork %r."%(str(ipSrc),subnet))
+
+						macNext = EthAddr(self.arpTable[r][str(ipDst)][1])
+						portNext = self.arpTable[r][str(ipDst)][0]
+
+					else:
+						log.debug("Packet came from the same subnet. Ignoring.")
+		else:
+			log.debug("Host is not in router %d subnets. Trying to find next hop."%r)
+
+			# Packed should be forwarded
+			existsInNetwork = False
+
+			for i in self.externalRouteTable[r]:
+				if ipDst.inNetwork(i):
+					existsInNetwork = True
+					routerDst = self.externalRouteTable[r][i]
+
+					log.debug("Forwarding to router with the ip %r"%(routerDst))
+
+					# Find the mac to the next-hop router
+					dstMac = ""
+					for j in range(0,Controller.NUMBER_OF_ROUTERS):
+						if j != r:
+							for k in self.routingPorts[j]["subnets"]:
+								if self.routingPorts[j]["subnets"][k]["ip"] ==  routerDst:
+									macNext = EthAddr(self.routingPorts[j]["mac"])
+									portNext = self.routingPorts[r]["subnets"][k]["port"]
+
+
+					log.debug("Found route trough %r"%dstMac)
+
+			if not existsInNetwork:
+				log.debug("Next hop not found. Packet not forwarded.")
+
+		return (macNext,portNext)
+
+
+
+	def router(self, packet, data, r):
+		ipDst = packet.payload.dstip
+		ipSrc = packet.payload.srcip
+		# Packet is reffered to a subnetwork from the router
+		(macNext,portNext) = self.findRoute(ipSrc, ipDst, r)
+
+		msg = of.ofp_flow_mod()
+		msg.match.dl_type = pkt.ethernet.IP_TYPE
+		msg.match.dl_src = packet.src
+		msg.match.dl_dst = packet.dst
+		msg.match.nw_src = packet.payload.srcip
+		msg.match.nw_dst = packet.payload.dstip # change with subnetDest
+		msg.match.in_port = data.in_port
+		msg.data = data
+		msg.actions.append(of.ofp_action_dl_addr.set_dst(macNext))
+		msg.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
+		msg.actions.append(of.ofp_action_output(port = portNext))
+		self.connection.send(msg)
+
+
+	def firewall(self, packet, data, r):
+		# Todo: add logic
+		self.router(packet, data, r)
+
 	def forwardIPPacket(self, packet, data, r):
 		ipDst = packet.payload.dstip
 		ipSrc = packet.payload.srcip
 		log.debug("Got packet srcIP:%s with macSrc:%s TO dstIP:%s macDst:%s"%(ipSrc,packet.src,ipDst,packet.dst))
 
-		# Packet is reffered to router
-		if packet.type == pkt.ethernet.ARP_TYPE:
-			arp(packet,data,r)
-		elif packet.type == pkt.ethernet.IP_TYPE:
-			ip_packet = packet.payload
+		ip_packet = packet.payload
 
-			# Check if the packet is a ping to router
-			pingToRouter = False
-			if ip_packet.protocol == pkt.ipv4.ICMP_PROTOCOL:
-				for k in self.routingPorts[r]["subnets"]:
-					if self.routingPorts[r]["subnets"][k]["ip"] == ipDst:
-						pingToRouter = True
+		# Check if the packet is a ping to router
+		pingToRouter = False
+		if ip_packet.protocol == pkt.ipv4.ICMP_PROTOCOL:
+			for k in self.routingPorts[r]["subnets"]:
+				if self.routingPorts[r]["subnets"][k]["ip"] == ipDst:
+					pingToRouter = True
 
-			# Ping to the router
-			if pingToRouter:
-		 		icmp_packet = ip_packet.payload
-			 	if icmp_packet.type == pkt.TYPE_ECHO_REQUEST:
-			 		log.debug("Recived icmp request to router %d"%r)
-			 		log.debug("Sending a reachable")
-		 			echo = pkt.echo()
-					echo.seq = icmp_packet.payload.seq + 1
-					echo.id = icmp_packet.payload.id
+		# Ping to the router
+		if pingToRouter:
+	 		icmp_packet = ip_packet.payload
+		 	if icmp_packet.type == pkt.TYPE_ECHO_REQUEST:
+		 		log.debug("Recived icmp request to router %d"%r)
+		 		log.debug("Sending a reachable")
+	 			echo = pkt.echo()
+				echo.seq = icmp_packet.payload.seq + 1
+				echo.id = icmp_packet.payload.id
 
-					icmp_reply = pkt.icmp()
-					icmp_reply.type = pkt.TYPE_ECHO_REPLY
-					icmp_reply.payload = echo
+				icmp_reply = pkt.icmp()
+				icmp_reply.type = pkt.TYPE_ECHO_REPLY
+				icmp_reply.payload = echo
 
-					ip_p = pkt.ipv4()
-					ip_p.srcip = ipDst
-					ip_p.dstip = ipSrc
-					ip_p.protocol = pkt.ipv4.ICMP_PROTOCOL
-					ip_p.payload = icmp_reply
+				ip_p = pkt.ipv4()
+				ip_p.srcip = ipDst
+				ip_p.dstip = ipSrc
+				ip_p.protocol = pkt.ipv4.ICMP_PROTOCOL
+				ip_p.payload = icmp_reply
 
-					eth_p = pkt.ethernet()
-					eth_p.type = pkt.ethernet.IP_TYPE
-					# Resend to previous route
-					eth_p.dst = packet.src
-					eth_p.src = packet.dst
-					eth_p.payload = ip_p
+				eth_p = pkt.ethernet()
+				eth_p.type = pkt.ethernet.IP_TYPE
+				# Resend to previous route
+				eth_p.dst = packet.src
+				eth_p.src = packet.dst
+				eth_p.payload = ip_p
 
-					msg = of.ofp_packet_out()
-					msg.data = eth_p.pack()
-					action = of.ofp_action_output(port = data.in_port)
-					msg.actions.append(action)
+				msg = of.ofp_packet_out()
+				msg.data = eth_p.pack()
+				action = of.ofp_action_output(port = data.in_port)
+				msg.actions.append(action)
 
-					self.connection.send(msg)
+				self.connection.send(msg)
 
-			# Any other packet
-			else:
-				# Packet is reffered to a subnetwork from the router
-				thisHop = False
-				if str(ipDst) in self.arpTable[r]:
-					thisHop = True
-					for subnet in self.routingPorts[r]['subnets']:
-						# Source and destination are not in the same subnet
-						if ipDst.inNetwork(subnet) and not ipSrc.inNetwork(subnet):
-							log.debug("Forwarding packet from %r to subnetwork %r directly."%(str(ipSrc),subnet))
-							msg = of.ofp_flow_mod()
-							msg.match.dl_type = pkt.ethernet.IP_TYPE
-							msg.match.dl_src = packet.src
-							msg.match.dl_dst = packet.dst
-							msg.match.nw_src = packet.payload.srcip
-							msg.match.nw_dst = packet.payload.dstip # change with subnetDest
-							msg.match.in_port = data.in_port
-							msg.data = data
-							msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(self.arpTable[r][str(ipDst)][1])))
-							msg.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
-							msg.actions.append(of.ofp_action_output(port = self.arpTable[r][str(ipDst)][0]))
-							self.connection.send(msg)
-						else:
-							log.debug("Packet came from the same subnet. Ignoring.")
-				else:
-					log.debug("Host is not in router %d subnets."%r)
-
-				# Packed should be forwarded
-				existsInNetwork = False
-				if not thisHop:
-					for i in self.externalRouteTable[r]:
-						if ipDst.inNetwork(i):
-							existsInNetwork = True
-							routerDst = self.externalRouteTable[r][i]
-
-							log.debug("Forwarding to router with the ip %r"%(routerDst))
-							msg = of.ofp_flow_mod()
-							msg.match.dl_type = pkt.ethernet.IP_TYPE
-							msg.match.dl_src = packet.src
-							msg.match.dl_dst = packet.dst    
-							msg.match.nw_src = packet.payload.srcip
-							msg.match.nw_dst = packet.payload.dstip
-							msg.match.in_port = data.in_port
-							msg.data = data
-
-							# Find the mac to the next-hop router
-							dstMac = ""
-							dstSub = ""
-							for j in range(0,Controller.NUMBER_OF_ROUTERS):
-								if j != r:
-									for k in self.routingPorts[j]["subnets"]:
-										if self.routingPorts[j]["subnets"][k]["ip"] ==  routerDst:
-											dstMac = self.routingPorts[j]["mac"]
-											dstSub = k
-
-							log.debug("Sending trough %r"%dstMac)
-
-							msg.actions.append(of.ofp_action_dl_addr.set_dst(EthAddr(dstMac)))
-							msg.actions.append(of.ofp_action_dl_addr.set_src(self.routingPorts[r]["mac"]))
-							msg.actions.append(of.ofp_action_output(port = self.routingPorts[r]["subnets"][dstSub]["port"]))
-							self.connection.send(msg)
-
-				if not existsInNetwork:
-					log.debug("No where to fw packet")
-
-
-
-	def route(self, packet, data, r):
-
-		# ARP packet
-		if packet.type == pkt.ethernet.ARP_TYPE:
-			self.arp(packet, data, r)
-		# IPv4 Packet
-		elif packet.type == pkt.ethernet.IP_TYPE:
-			self.forwardIPPacket(packet, data, r)	
-
-
+		# Any other packet
+		else:
+			if(r == 4):  # Firewall 1
+				self.firewall(packet, data, r)
+			else:		# Any router
+				self.router(packet, data, r)
 
 	def _handle_PacketIn(self,event):
 		log.debug("\nEvent from: %r"%dpid_to_str(event.dpid))
@@ -363,7 +362,11 @@ class Controller(object):
 			log.debug("ERROR: Unexpected event DPID:"+ dpid_to_str(event.dpid))
 			return
 		r = self.switchDPID[dpid_to_str(event.dpid)]
-		self.route(packet,data,r)
+
+		if packet.type == pkt.ethernet.ARP_TYPE:
+			self.arp(packet,data,r)
+		elif packet.type == pkt.ethernet.IP_TYPE:
+			self.forwardIPPacket(packet,data,r)
 
 def launch ():
 	def start_switch (event):
