@@ -359,8 +359,16 @@ class Controller(object):
 
 		return False
 
-	def blockAttacker():
-		pass
+	def blockMsgFlow(self, packet, data):
+		log.debug("Added deny flow.")
+
+		msg = of.ofp_flow_mod()
+		msg.match.dl_type = pkt.ethernet.IP_TYPE
+		msg.match.nw_src = packet.payload.srcip
+		msg.data = data
+		msg.actions.append(of.ofp_action_output(port = of.OFPP_NONE))
+		self.connection.send(msg)
+		
 
 
 	def firewall(self, packet, data, r):
@@ -381,7 +389,7 @@ class Controller(object):
 				if ipPacket.protocol == pkt.ipv4.ICMP_PROTOCOL:
 					flood = self.checkFlood(self.icmpFlood, ipSrc, 1000, 50)
 				elif ipPacket.protocol == pkt.ipv4.UDP_PROTOCOL:
-					flood = self.checkFlood(self.updFlood, ipSrc, 1000, 100)
+					flood = self.checkFlood(self.updFlood, ipSrc, 500, 100)
 				elif ipPacket.protocol == pkt.ipv4.TCP_PROTOCOL:
 					# SYN
 					tcp = ipPacket.payload
@@ -391,8 +399,8 @@ class Controller(object):
 
 				if flood:
 					# Block ip
-					log.debug("Flood attack detected. Blocking %r."%ipSrc)
-					log.debug("----------------------FLOOD_DETECTED.REMOVE_DEBUG_LINE_AFTER_TESTING---------------------------")
+					log.debug("!!! Flood attack detected. Blocking %r."%ipSrc)
+					self.blockMsgFlow(packet, data)
 				else:
 					self.routeMsg(packet, data, macNext, portNext)
 
