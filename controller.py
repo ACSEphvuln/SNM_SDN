@@ -187,7 +187,7 @@ class Controller(object):
 
 	# ref: https://openflow.stanford.edu/display/ONL/POX+Wiki.html#POXWiki-Example%3AARPmessages
 	def arp(self, packet, data, r):
-		log.debug("Arp message detected from %r"%packet.payload.protodst)
+		log.debug("Arp request detected to %r"%str(packet.payload.protodst))
 		arp_packet = packet.payload
 		if arp_packet.opcode == pkt.arp.REQUEST:
 			# For each subnet in the router 'r'
@@ -195,7 +195,6 @@ class Controller(object):
 				subIP = self.routingPorts[r]["subnets"][k]['ip']
 				# Directed to router for the specific subnet
 				if str(arp_packet.protodst) == subIP:
-					log.debug("Sending ARP reply")
 					# Forge ARP Reply
 					# ARP
 					arp_reply = pkt.arp()
@@ -219,6 +218,7 @@ class Controller(object):
 					self.connection.send(msg)
 
 					self.arpTable[r][arp_packet.protodst] = [data.in_port, packet.src]
+					log.debug("Sending ARP reply: %r -> %r"%(str(arp_reply.hwsrc),subIP))
 
 				else:
 					# Ignore. In our topology each port coresponds to a subnet
@@ -240,7 +240,7 @@ class Controller(object):
 				# Source and destination are not in the same subnet
 				if ipDst.inNetwork(subnet):
 					if not ipSrc.inNetwork(subnet):
-						log.debug("Found direct route for packet from %r to subnetwork %r."%(str(ipSrc),subnet))
+						log.debug("Found direct route for to %r trough subnetwork %r."%(str(ipDst),subnet))
 
 						macNext = EthAddr(self.arpTable[r][str(ipDst)][1])
 						portNext = self.arpTable[r][str(ipDst)][0]
@@ -258,7 +258,7 @@ class Controller(object):
 					existsInNetwork = True
 					routerDst = self.externalRouteTable[r][i]
 
-					log.debug("Forwarding to router with the ip %r"%(routerDst))
+					log.debug("Destination not in this hop. Forwarding to router with the ip %r"%(routerDst))
 
 					# Find the mac to the next-hop router
 					dstMac = ""
@@ -270,34 +270,37 @@ class Controller(object):
 									portNext = self.routingPorts[r]["subnets"][k]["port"]
 
 
-					log.debug("Found route trough %r"%dstMac)
-
 			if not existsInNetwork:
-				log.debug("Next hop not found. Packet not forwarded.")
+				log.debug("Next hop not found. No where forward packet.")
 
 		return (macNext,portNext)
 
+
 	def routeMsgFlow(self, packet, data, macNext, portNext):
-		log.debug("Added flow.")
+		log.debug("Added flow from %r to %r."%(str(packet.src),str(packet.dst)))
 
 		msg = of.ofp_flow_mod()
+
 		msg.match.dl_type = pkt.ethernet.IP_TYPE
-		msg.match.dl_src = packet.src
 		msg.match.dl_dst = packet.dst
 		msg.match.nw_src = packet.payload.srcip
-		msg.match.nw_dst = packet.payload.dstip # change with subnetDest
+		msg.match.nw_dst = packet.payload.dstip
 		msg.match.in_port = data.in_port
 		msg.data = data
+		# Change the mac destination to the next device's address
 		msg.actions.append(of.ofp_action_dl_addr.set_dst(macNext))
+		# Change the mac of the source with the router's mac
 		msg.actions.append(of.ofp_action_dl_addr.set_src(packet.dst))
+		# Forward to the specified port
 		msg.actions.append(of.ofp_action_output(port = portNext))
 		self.connection.send(msg)
 
 	def routeMsg(self, packet, data, macNext, portNext):
-		log.debug("Routing message without flow")
-
-		packet.src = packet.dst
+		log.debug("Routing message without flow from %r to %r."%(str(packet.src),str(packet.dst)))
+		# Change the mac destination to the next device's address
 		packet.dst = macNext
+		# Change the mac of the source with the router's mac
+		packet.src = packet.dst
 		msg = of.ofp_packet_out()
 		msg.data = packet.pack()
 		msg.actions.append(of.ofp_action_output(port = portNext))
@@ -308,8 +311,10 @@ class Controller(object):
 		ipSrc = packet.payload.srcip
 		# Packet is reffered to a subnetwork from the router
 		(macNext,portNext) = self.findRoute(ipSrc, ipDst, r)
-		
-		self.routeMsgFlow(packet, data, macNext, portNext)
+
+		# If there is a route
+		if macNext and portNext:
+			self.routeMsgFlow(packet, data, macNext, portNext)
 
 
 	def badFlags(self, tcp):
@@ -331,7 +336,7 @@ class Controller(object):
 				log.debug("Detected no-flag recon attack. Packet dropped.")
 				return True
 
-			# Any with urg
+			# any with urg
 			if tcp.URG:
 				log.debug("Detected URG. Not used in this network. Possible recon. Packet dropped.")
 				return True
@@ -353,7 +358,7 @@ class Controller(object):
 			floodTable[ipSrc][0] = time.time()*1000
 
 			if floodTable[ipSrc][1] > maxPakets:
-				# Attack
+				# Attack detected
 				return True
 
 
@@ -364,6 +369,7 @@ class Controller(object):
 
 		msg = of.ofp_flow_mod()
 		msg.match.dl_type = pkt.ethernet.IP_TYPE
+		# Any more requests from the source ip will be ignored
 		msg.match.nw_src = packet.payload.srcip
 		msg.data = data
 		msg.actions.append(of.ofp_action_output(port = of.OFPP_NONE))
@@ -377,13 +383,15 @@ class Controller(object):
 		# Packet is reffered to a subnetwork from the router
 		(macNext,portNext) = self.findRoute(ipSrc, ipDst, r)
 
-		if portNext == 1:
-			# Normal routing
-			self.routeMsgFlow(packet, data, macNext, portNext)
-		else:
-			# If flags are valid and not in the list of attacks:
-
+		# If there is a route
+		if macNext and portNext:
+			# port 1 -> the traffic that comes out of the protected network
+			if portNext == 1:
+				# Normal routing
+				self.routeMsgFlow(packet, data, macNext, portNext)
+			else:
 				flood = False
+				flagsOK = True;
 				ipPacket = packet.payload
 
 				if ipPacket.protocol == pkt.ipv4.ICMP_PROTOCOL:
@@ -394,37 +402,42 @@ class Controller(object):
 					# SYN
 					tcp = ipPacket.payload
 					if not self.badFlags(tcp):
+						# If flags are not in the list of attacks
 						if tcp.flags == 0x2:
 							flood = self.checkFlood(self.synFlood, ipSrc, 100, 100)
+					else:
+						flagsOK = False
+
 
 				if flood:
 					# Block ip
 					log.debug("!!! Flood attack detected. Blocking %r."%ipSrc)
 					self.blockMsgFlow(packet, data)
 				else:
-					self.routeMsg(packet, data, macNext, portNext)
+					if flagsOK:
+						# Will not block the attacker.
+						self.routeMsg(packet, data, macNext, portNext)
 
 
 	def forwardIPPacket(self, packet, data, r):
 		ipDst = packet.payload.dstip
 		ipSrc = packet.payload.srcip
-		log.debug("Got packet srcIP:%s with macSrc:%s TO dstIP:%s macDst:%s"%(ipSrc,packet.src,ipDst,packet.dst))
+		log.debug("Got packet srcIP:%s with macSrc:%s TO dstIP:%s macDst:%s"%(ipSrc,str(packet.src),ipDst,str(packet.dst)))
 
-		ip_packet = packet.payload
+		ipPacket = packet.payload
 
 		# Check if the packet is a ping to router
 		pingToRouter = False
-		if ip_packet.protocol == pkt.ipv4.ICMP_PROTOCOL:
+		if ipPacket.protocol == pkt.ipv4.ICMP_PROTOCOL:
 			for k in self.routingPorts[r]["subnets"]:
 				if self.routingPorts[r]["subnets"][k]["ip"] == ipDst:
 					pingToRouter = True
 
 		# Ping to the router
 		if pingToRouter:
-	 		icmp_packet = ip_packet.payload
+	 		icmp_packet = ipPacket.payload
 		 	if icmp_packet.type == pkt.TYPE_ECHO_REQUEST:
-		 		log.debug("Recived icmp request to router %d"%r)
-		 		log.debug("Sending a reachable")
+		 		log.debug("Recived icmp request to router %r. Sending echo reply."%str(ipDst))
 	 			echo = pkt.echo()
 				echo.seq = icmp_packet.payload.seq + 1
 				echo.id = icmp_packet.payload.id
@@ -472,8 +485,10 @@ class Controller(object):
 			return
 		r = self.switchDPID[dpid_to_str(event.dpid)]
 
+		# ARP
 		if packet.type == pkt.ethernet.ARP_TYPE:
 			self.arp(packet,data,r)
+		# IP
 		elif packet.type == pkt.ethernet.IP_TYPE:
 			self.forwardIPPacket(packet,data,r)
 
