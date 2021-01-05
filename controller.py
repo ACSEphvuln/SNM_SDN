@@ -270,13 +270,8 @@ class Controller(object):
 
 		return (macNext,portNext)
 
-
-
-	def router(self, packet, data, r):
-		ipDst = packet.payload.dstip
-		ipSrc = packet.payload.srcip
-		# Packet is reffered to a subnetwork from the router
-		(macNext,portNext) = self.findRoute(ipSrc, ipDst, r)
+	def routeMsgFlow(self, packet, data, macNext, portNext):
+		log.debug("Added flow.")
 
 		msg = of.ofp_flow_mod()
 		msg.match.dl_type = pkt.ethernet.IP_TYPE
@@ -291,10 +286,41 @@ class Controller(object):
 		msg.actions.append(of.ofp_action_output(port = portNext))
 		self.connection.send(msg)
 
+	def routeMsg(self, packet, data, macNext, portNext):
+		log.debug("Routing message without flow")
+
+		packet.src = packet.dst
+		packet.dst = macNext
+		msg = of.ofp_packet_out()
+		msg.data = packet.pack()
+		msg.actions.append(of.ofp_action_output(port = portNext))
+		self.connection.send(msg)
+
+	def router(self, packet, data, r):
+		ipDst = packet.payload.dstip
+		ipSrc = packet.payload.srcip
+		# Packet is reffered to a subnetwork from the router
+		(macNext,portNext) = self.findRoute(ipSrc, ipDst, r)
+		
+		self.routeMsgFlow(packet, data, macNext, portNext)
+
 
 	def firewall(self, packet, data, r):
-		# Todo: add logic
-		self.router(packet, data, r)
+		ipDst = packet.payload.dstip
+		ipSrc = packet.payload.srcip
+		# Packet is reffered to a subnetwork from the router
+		(macNext,portNext) = self.findRoute(ipSrc, ipDst, r)
+
+		if portNext == 1:
+			# Normal routing
+			self.routeMsgFlow(packet, data, macNext, portNext)
+		else:
+			# Logic accept/reject:
+			allow = True
+
+			if allow:
+				self.routeMsg(packet, data, macNext, portNext)
+
 
 	def forwardIPPacket(self, packet, data, r):
 		ipDst = packet.payload.dstip
