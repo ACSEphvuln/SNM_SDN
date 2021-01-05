@@ -312,8 +312,7 @@ class Controller(object):
 		self.routeMsgFlow(packet, data, macNext, portNext)
 
 
-	def badFlags(self, packet):
-		tcp = packet.find('tcp')
+	def badFlags(self, tcp):
 		if tcp:
 			# Could be optimised. Used this way for logging purpuses
 
@@ -341,7 +340,7 @@ class Controller(object):
 
 	# Stateful
 	def checkFlood(self, floodTable, ipSrc, maxPakets, interval):
-		if ipSrc not in self.floodTable.keys():
+		if ipSrc not in floodTable.keys():
 			# Add host to watcher
 			floodTable[ipSrc] = [time.time()*1000,1]
 		else:
@@ -350,8 +349,8 @@ class Controller(object):
 				floodTable[ipSrc][1] = 0;
 
 			# Increment observed packets
-			floodTable[ipSrc][1] = self.floodTable[ipSrc][1] + 1
-			floodTable[ipSrc][0] =  time.time()*1000
+			floodTable[ipSrc][1] = floodTable[ipSrc][1] + 1
+			floodTable[ipSrc][0] = time.time()*1000
 
 			if floodTable[ipSrc][1] > maxPakets:
 				# Attack
@@ -360,6 +359,8 @@ class Controller(object):
 
 		return False
 
+	def blockAttacker():
+		pass
 
 
 	def firewall(self, packet, data, r):
@@ -373,17 +374,20 @@ class Controller(object):
 			self.routeMsgFlow(packet, data, macNext, portNext)
 		else:
 			# If flags are valid and not in the list of attacks:
-			if not self.badFlags(packet):
-				flood = False
 
-				if packet.type == pkt.ipv4.ICMP_PROTOCOL:
+				flood = False
+				ipPacket = packet.payload
+
+				if ipPacket.protocol == pkt.ipv4.ICMP_PROTOCOL:
 					flood = self.checkFlood(self.icmpFlood, ipSrc, 1000, 50)
-				elif packet.type == pkt.ipv4.UDP_PROTOCOL:
+				elif ipPacket.protocol == pkt.ipv4.UDP_PROTOCOL:
 					flood = self.checkFlood(self.updFlood, ipSrc, 1000, 100)
-				elif packet.type == pkt.ipv4.TCP_PROTOCOL:
+				elif ipPacket.protocol == pkt.ipv4.TCP_PROTOCOL:
 					# SYN
-					if packet.payload.flags == 0x2:
-						flood = self.checkFlood(self.synFlood, ipSrc, 100, 100)
+					tcp = ipPacket.payload
+					if not self.badFlags(tcp):
+						if tcp.flags == 0x2:
+							flood = self.checkFlood(self.synFlood, ipSrc, 100, 100)
 
 				if flood:
 					# Block ip
