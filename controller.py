@@ -305,6 +305,38 @@ class Controller(object):
 		self.routeMsgFlow(packet, data, macNext, portNext)
 
 
+	def checkFlags(self, packet):
+		tcp = packet.find('tcp')
+		if tcp:
+			# Could be optimised. Used this way for logging purpuses
+
+			# tcp.URG and tcp.FIN and tcp.URG
+			if tcp.flags == 0x29:
+				log.debug("Detected XMAS recon attack. Packet dropped.")
+				return True
+
+			# tcp.SYN and tcp.FIN
+			if tcp.flags == 0x3:
+				log.debug("Detected SYN-FIN recon attack. Packet dropped.")
+				detect = True
+				return True
+
+			# no flag
+			if tcp.flags == 0x0:
+				log.debug("Detected no-flag recon attack. Packet dropped.")
+				detect = True
+				return True
+
+			# Any with urg
+			if tcp.URG:
+				log.debug("Detected URG. Not used in this network. Possible recon. Packet dropped.")
+				detect = True
+				return True
+
+		return False
+
+
+
 	def firewall(self, packet, data, r):
 		ipDst = packet.payload.dstip
 		ipSrc = packet.payload.srcip
@@ -317,6 +349,12 @@ class Controller(object):
 		else:
 			# Logic accept/reject:
 			allow = True
+			attacks=[self.checkFlags]
+
+			for detectAttack in attacks:
+				if detectAttack(packet):
+					allow = False
+					break; 
 
 			if allow:
 				self.routeMsg(packet, data, macNext, portNext)
