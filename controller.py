@@ -485,10 +485,11 @@ class Controller(object):
 				self.connection.send(msg)
 		# Any other packet
 		else:
-			if(r == 4):  # Firewall 1
-				self.firewall(packet, data, r)
-			else:		# Any router
-				self.router(packet, data, r)
+			if self.routingPorts[r]["mac"] == str(packet.dst):
+				if(r == 4):  # Firewall 1
+					self.firewall(packet, data, r)
+				else:		# Any router
+					self.router(packet, data, r)
 
 
 	def _handle_PacketIn(self,event):
