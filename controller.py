@@ -7,6 +7,8 @@ from pox.lib.addresses import IPAddr, EthAddr
 from pox.lib.util import dpid_to_str
 log = core.getLogger()
 
+ATTACKER = "192.168.210.42"
+HTTP_SERVER = "192.168.210.162"
 
 class Controller(object):
 	NUMBER_OF_ROUTERS = 6
@@ -17,7 +19,7 @@ class Controller(object):
 
 		# {ip:[port:mac]}
 		self.arpTable=[{
-		"192.168.210.42":[3,"aa:aa:aa:aa:aa:aa"], #attacker
+		ATTACKER:[3,"aa:aa:aa:aa:aa:aa"], #attacker
 		},{
 
 		},{
@@ -25,7 +27,7 @@ class Controller(object):
 		},{
 
 		},{
-		"192.168.210.162":[2,"fa:fa:fa:fa:fa:fa"], #httpServer
+		HTTP_SERVER:[2,"fa:fa:fa:fa:fa:fa"], #httpServer
 		},{
 
 		}]
@@ -174,7 +176,6 @@ class Controller(object):
 			}
 		}]
 
-
 		# Assign DPID to each router
 		self.switchDPID={
 		"00-00-00-00-01-00":0,
@@ -230,9 +231,17 @@ class Controller(object):
 			# ! Can pe poisoned if handeled this way
 
 
-	def findRoute(self, ipSrc, ipDst, r):
+	def findRoute(self,ipSrc,ipDst, inPort , r):
 		macNext = None
 		portNext = None
+
+		# Check for masquarade attack from local subnetworks
+		for subnet in self.routingPorts[r]["subnets"]:
+			if ipSrc.inNetwork(subnet):
+				if inPort != self.routingPorts[r]["subnets"][subnet]["port"]:
+					log.debug("Packet in_port not coresponding with the known port of the subnet. Possible masquerade or misconfiguration,blocking further similar requests.")
+					return (None,inPort)
+
 
 		# Packet is reffered to a subnetwork from the router
 		if str(ipDst) in self.arpTable[r]:
@@ -306,15 +315,33 @@ class Controller(object):
 		msg.actions.append(of.ofp_action_output(port = portNext))
 		self.connection.send(msg)
 
+
+	def blockMsgFlow(self, packet, data, inPort=None):
+		log.debug("Added deny flow.")
+
+		msg = of.ofp_flow_mod()
+		msg.match.dl_type = pkt.ethernet.IP_TYPE
+		# Any more requests from the source ip will be ignored
+		msg.match.nw_src = packet.payload.srcip
+		if inPort:
+			msg.match.in_port = inPort
+		msg.data = data
+		msg.actions.append(of.ofp_action_output(port = of.OFPP_NONE))
+		self.connection.send(msg)
+		
+
+
 	def router(self, packet, data, r):
 		ipDst = packet.payload.dstip
 		ipSrc = packet.payload.srcip
 		# Packet is reffered to a subnetwork from the router
-		(macNext,portNext) = self.findRoute(ipSrc, ipDst, r)
+		(macNext,portNext) = self.findRoute(ipSrc,ipDst,data.in_port, r)
 
 		# If there is a route
 		if macNext and portNext:
 			self.routeMsgFlow(packet, data, macNext, portNext)
+		elif portNext:
+			self.blockMsgFlow(packet, data, inPort=portNext)
 
 
 	def badFlags(self, tcp):
@@ -364,24 +391,12 @@ class Controller(object):
 
 		return False
 
-	def blockMsgFlow(self, packet, data):
-		log.debug("Added deny flow.")
-
-		msg = of.ofp_flow_mod()
-		msg.match.dl_type = pkt.ethernet.IP_TYPE
-		# Any more requests from the source ip will be ignored
-		msg.match.nw_src = packet.payload.srcip
-		msg.data = data
-		msg.actions.append(of.ofp_action_output(port = of.OFPP_NONE))
-		self.connection.send(msg)
-		
-
 
 	def firewall(self, packet, data, r):
 		ipDst = packet.payload.dstip
 		ipSrc = packet.payload.srcip
 		# Packet is reffered to a subnetwork from the router
-		(macNext,portNext) = self.findRoute(ipSrc, ipDst, r)
+		(macNext,portNext) = self.findRoute(ipSrc,ipDst,data.in_port, r)
 
 		# If there is a route
 		if macNext and portNext:
@@ -390,6 +405,7 @@ class Controller(object):
 				# Normal routing
 				self.routeMsgFlow(packet, data, macNext, portNext)
 			else:
+
 				flood = False
 				flagsOK = True;
 				ipPacket = packet.payload
@@ -417,6 +433,8 @@ class Controller(object):
 					if flagsOK:
 						# Will not block the attacker.
 						self.routeMsg(packet, data, macNext, portNext)
+		elif portNext:
+			self.blockMsgFlow(packet, data, inPort=portNext)
 
 
 	def forwardIPPacket(self, packet, data, r):
